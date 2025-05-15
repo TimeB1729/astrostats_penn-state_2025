@@ -1,0 +1,8 @@
+x <- c(1:10)
+y<- c(11:20)
+z = NULL
+for (i in 1:10){
+    z[i] <- x[i]+y[i]
+}
+print(x+y)
+print(z)
