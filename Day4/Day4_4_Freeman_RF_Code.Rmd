@@ -1,0 +1,277 @@
+---
+title: "Photometric Redshift (and Stellar Mass!) Estimation with Trees and Random Forest"
+author: "Peter Freeman (Penn State Summer School in Statistics for Astronomers)"
+output: 
+  html_document:
+    toc: false
+    theme: spacelab
+---
+
+# Data
+
+## Input and Processing
+
+We'll begin by importing photometric redshift data from the Buzzard simulation, data that were utilized in the first Data Challenge of the Rubin Observatory / Large Synoptic Survey Telescope (LSST DC1).
+```{r}
+df <- read.csv("https://raw.githubusercontent.com/pefreeman/PSU_2019/master/PhotoZ.csv")
+
+w  <- apply(df,1,function(x){return(max(x)<98)})
+df <- df[w,]
+
+dim(df)
+names(df)
+```
+
+If everything loaded correctly, you should see in your global environment a data frame containing eight measurements for each of 10,000 (simulated) galaxies. The first six are magnitudes; these are the predictor variables (or independent or explanatory variables). The last two are response (or dependent) variables representing galaxy redshift and stellar mass (in log-base-10 solar mass units).
+These will be treated separately when we learn models below. (In theory, one
+*can* learn a so-called multivariate regression model in which we have more
+than one response variable, but these are not commonly learned and are beyond
+the scope of this lab.)
+
+At this point, we will process the data so that instead of six magnitudes we will have five colors and one magnitude. (The reason? Empirically, it leads to better predictions of redshift.)
+```{r}
+ug <- df$u - df$g
+gr <- df$g - df$r
+ri <- df$r - df$i
+iz <- df$i - df$z
+zy <- df$z - df$y
+
+df             <- data.frame(ug,gr,ri,iz,zy,df$i,df$redshift,df$mstar)
+names(df)[6:8] <- c("i","redshift","mstar")
+
+summary(df)
+```
+
+## Data Splitting
+
+To illustrate model assessment, we will perform simple data splitting in this lab. k-fold cross-validation is preferred, as it leads to less variance in estimates of the mean-squared error, but it is computationally more time intensive. Below, we place 70% of the data into a training set, and 30% into a test set.
+```{r}
+set.seed(102)
+
+s          <- sample(nrow(df),0.7*nrow(df))
+pred.train <- df[s,1:6]
+pred.test  <- df[-s,1:6]
+z.train    <- df[s,7]
+z.test     <- df[-s,7]
+mass.train <- df[s,8]
+mass.test  <- df[-s,8]
+```
+
+# Baseline: Linear Regression Analysis
+
+In the next two code chunks below we will perform linear regression so as to learn baseline models for redshift and for stellar mass. By "baseline," I mean that we are going to get initial values for the test-set mean-squared error that should be larger than those which we'll observe for non-linear tree and random forest models.
+
+The mean-squared error is
+$$
+MSE = \frac{1}{n_{\rm test}} \sum_{i=1}^{n_{\rm test}} (Y_i^{\rm obs} - {\hat Y}_i)^2
+$$
+where $n_{\rm test}$ is the number of galaxies in the test set, and $\hat{Y}_i$ is the predicted value for the $i^{\rm th}$ test-set response variable.
+
+## Linear Regression for Redshift (z)
+
+```{r fig.align='center',fig.width=4,fig.height=4}
+if ( require(ggplot2) == FALSE ) {
+  install.packages("ggplot2",repos="https://cloud.r-project.org")
+  library(ggplot2)
+}
+
+out.lm  <- lm(z.train~.,data=pred.train)
+summary(out.lm)
+z.pred  <- predict(out.lm,newdata=pred.test)
+(mse.lm <- mean((z.pred-z.test)^2))
+ggplot(data=data.frame(z.test,z.pred),mapping=aes(x=z.test,y=z.pred)) + 
+  geom_point() +
+  xlim(0,2) + ylim(0,2) + 
+  geom_abline(intercept=0,slope=1,color="red") + 
+  xlab("Observed Redshift") + ylab("Predicted Redshift")
+```
+
+The mean-squared error is 0.093. Looking at the diagnostic plot, we see that while the data are informative about redshift, the model is not particularly great. If you examine the output of `summary(out.lm)`, you would find that the $R^2$ value is $\approx$ 0.48: we can do better! (Particularly at high redshifts!)
+
+Remember: the magnitude of the MSE depends on the *units of the response variable*! An MSE of 0.001 observed for one dataset is not necessarily better than a value of 100 observed for another.
+
+## Linear Regression for Stellar Mass (mass)
+
+```{r fig.align='center',fig.width=4,fig.height=4}
+out.lm    <- lm(mass.train~.,data=pred.train)
+summary(out.lm)
+mass.pred <- predict(out.lm,newdata=pred.test)
+(mse.lm   <- mean((mass.pred-mass.test)^2))
+ggplot(data=data.frame(mass.test,mass.pred),mapping=aes(x=mass.test,y=mass.pred)) +
+  geom_point() +
+  xlim(6,12) + ylim(6,12) + 
+  geom_abline(intercept=0,slope=1,color="red") + 
+  xlab("Observed Redshift") + ylab("Predicted Redshift")
+```
+
+The MSE is 0.318 and the $R^2$ is 0.744: linear regression definitely does a better job of predicting mass than redshift, but there's still room for improvement.
+
+# Decision Trees
+
+## Redshift
+
+```{r fig.align='center',fig.width=4,fig.height=4}
+if ( require(rpart) == FALSE ) {
+  install.packages("rpart",repos="https://cloud.r-project.org")
+  library(rpart)
+}
+if ( require(rpart.plot) == FALSE ) {
+  install.packages("rpart.plot",repos="https://cloud.r-project.org")
+  library(rpart.plot)
+}
+
+out.rpart  <- rpart(z.train~.,data=pred.train)
+z.pred     <- predict(out.rpart,newdata=pred.test)
+(mse.rpart <- mean((z.pred-z.test)^2))
+ggplot(data=data.frame(z.test,z.pred),mapping=aes(x=z.test,y=z.pred)) + 
+  geom_point() +
+  xlim(0,2) + ylim(0,2) +
+  geom_abline(intercept=0,slope=1,color="red") + 
+  xlab("Observed Redshift") + ylab("Predicted Redshift")
+rpart.plot(out.rpart)
+```
+
+The MSE is reduced from 0.093 to 0.088: a regression tree model is better than a linear regression model for predicting redshift. (But not necessarily so much better as to select it over linear regression, which provides full inferential capabilities.)
+
+Look at the diagnostic plot of `z.pred` versus `z.test`. Do you understand *why* it looks the way it does? All test data that map to a particular leaf in the tree model have the same predicted response value. There are 11 leaves in the tree, and 11 horizontal strips in the diagnostic plot.
+
+Finally, look at the tree plot. Other than the fact that the $u$-band magnitude is apparently not informative, we don't observe any overarching trends.
+
+## Stellar Mass
+
+Your job, if you choose to accept it:
+```{r}
+# REPLACE ME WITH A DECISION TREE ANALYSIS FOR STELLAR MASS (change z.train to mass.train, etc.)
+```
+*Replace me with any conclusions you reach.*
+
+<hr>
+
+# Random Forest
+
+## Redshift
+
+```{r fig.align='center',fig.width=4,fig.height=4}
+if ( require(randomForest) == FALSE ) {
+  install.packages("randomForest",repos="https://cloud.r-project.org")
+  suppressMessages(library(randomForest))
+}
+
+set.seed(101)
+out.rf  <- randomForest(z.train~.,data=pred.train,importance=TRUE)
+z.pred  <- predict(out.rf,newdata=pred.test)
+(mse.rf <- mean((z.pred-z.test)^2))
+randomForest::importance(out.rf,type=1)     # resolves namespace issue with rattle package
+ggplot(data=data.frame(z.test,z.pred),mapping=aes(x=z.test,y=z.pred)) + 
+  geom_point() +
+  xlim(0,2) + ylim(0,2) + 
+  geom_abline(intercept=0,slope=1,color="red") + 
+  xlab("Observed Redshift") + ylab("Predicted Redshift")
+varImpPlot(out.rf,type=1)
+```
+
+In the notes, we state that trees do not generalize well, and we see evidence of that here: the MSE decreases from 0.088 (tree) to 0.061 (RF). 
+
+Because we aggregate many trees (i.e., a forest, randomly grown), we cannot simply output a plot of a tree like we could above. Hence interpretability is reduced. What we *can* do is output (and visualize) the *importance* of each variable: when we split on that variable, by how much on average is the MSE reduced? We see that $iz$ is the most important variable overall, while (as expected, given what we wrote above), $ug$ is the least informative.
+
+## Stellar Mass
+
+Your job, if you choose to accept it:
+```{r}
+# REPLACE ME WITH A RANDOM FOREST ANALYSIS FOR STELLAR MASS
+```
+*Replace me with any conclusions you reach.*
+
+# XGBoost
+
+## Redshift
+
+```{r fig.align='center',fig.width=4,fig.height=4}
+if ( require(xgboost) == FALSE ) {
+  install.packages("xgboost",repos="https://cloud.r-project.org")
+  suppressMessages(library(xgboost))
+}
+
+train      <- xgb.DMatrix(data=as.matrix(pred.train),label=z.train)
+test       <- xgb.DMatrix(data=as.matrix(pred.test),label=z.test)
+set.seed(101)
+xgb.cv.out <- xgb.cv(params=list(objective="reg:squarederror"),
+                     train,nrounds=30,nfold=5,verbose=0)
+cat("The optimal number of trees is ",
+    which.min(xgb.cv.out$evaluation_log$test_rmse_mean),"\n")
+xgb.out  <- xgboost(train,
+                    nrounds=which.min(xgb.cv.out$evaluation_log$test_rmse_mean),
+                    params=list(objective="reg:squarederror"),verbose=0)
+xgb.pred <- predict(xgb.out,newdata=test)
+(mse.xgb <- mean((xgb.pred-z.test)^2)) # cf. 0.061 for random forest
+
+ggplot(data=data.frame(z.test,xgb.pred),mapping=aes(x=z.test,y=xgb.pred)) +
+  geom_point() +
+  xlim(0,2) + ylim(0,2) + 
+  geom_abline(intercept=0,slope=1,color="red") +
+  xlab("Observed Redshift") + ylab("Predicted Redshift")
+
+imp.out <- xgb.importance(model=xgb.out)
+xgb.plot.importance(importance_matrix=imp.out,col="blue")
+```
+
+We find that XGBoost does not do quite as well as random forest: the MSE increases from 0.061 to 0.066. The interpretation of variable importance is similar to before:  we see that $iz$ is the most important variable overall, while (as expected, given what we wrote above), $ug$ is the least informative.
+
+## Stellar Mass
+
+Your job, if you choose to accept it:
+```{r}
+# REPLACE ME WITH A XGBOOST ANALYSIS FOR STELLAR MASS
+```
+*Replace me with any conclusions you reach.*
+
+## Classification
+
+The dataset that we read in below contains magnitude and redshift data for 500 quasars and 500 stars. The idea is to learn a classifier that can discriminate between quasars and stars with a low misclassification rate. All code for a classification tree analysis, and a random forest analysis, is given; the idea is that you can use this code as reference material when building your first tree-based classifiers. (Note that I will not bother to transform the predictor space to include colors here, so take any numerical results with an appropriately sized grain of salt.)
+```{r fig.align='center',fig.width=4,fig.height=4}
+df <- read.csv("https://raw.githubusercontent.com/pefreeman/PSU_2019/master/StarQuasar.csv")
+
+dim(df)
+names(df)
+
+set.seed(202)
+s           <- sample(nrow(df),0.7*nrow(df))
+pred.train  <- df[s,1:5]
+pred.test   <- df[-s,1:5]
+class.train <- factor(df[s,8])
+class.test  <- factor(df[-s,8])
+
+# Classification Tree
+out.rpart  <- rpart(class.train~.,data=pred.train)
+class.pred <- predict(out.rpart,newdata=pred.test,type="class")
+(t.rpart   <- table(class.pred,class.test))
+(mcr.rpart <- (t.rpart[1,2]+t.rpart[2,1])/sum(t.rpart))
+rpart.plot(out.rpart)
+
+# Random Forest
+set.seed(101)
+out.rf     <- randomForest(class.train~.,data=pred.train)
+class.pred <- predict(out.rf,newdata=pred.test)
+(t.rf      <- table(class.pred,class.test))
+(mcr.rf    <- (t.rf[1,2]+t.rf[2,1])/sum(t.rf))
+importance(out.rf)
+varImpPlot(out.rf)
+
+# XGBoost
+train <- xgb.DMatrix(data=as.matrix(pred.train),label=as.numeric(class.train)-1)
+test  <- xgb.DMatrix(data=as.matrix(pred.test),label=as.numeric(class.test)-1)
+set.seed(101)
+xgb.cv.out <- xgb.cv(params=list(objective="binary:logistic"),train,
+                    nrounds=100,nfold=5,verbose=0,eval_metric="error")
+cat("The optimal number of splits is ",
+    which.min(xgb.cv.out$evaluation_log$test_error_mean),"\n")
+xgb.out    <- xgboost(train,
+              nrounds=which.min(xgb.cv.out$evaluation_log$test_error_mean),
+              params=list(objective="binary:logistic"),verbose=0,eval_metric="error")
+class.pred <- predict(xgb.out,newdata=test)
+class.pred <- ifelse(class.pred>0.5,"STAR","QSO")
+(t.xgb     <- table(class.pred,class.test))
+(mcr.xgb   <- (t.xgb[1,2]+t.xgb[2,1])/sum(t.xgb))
+imp.out    <- xgb.importance(model=xgb.out)
+xgb.plot.importance(importance_matrix=imp.out,col="blue")
+```
